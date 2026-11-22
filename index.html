@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SIMTELE-RISK</title>
+<style>
+:root{--bg:#f6f8fb;--card:#fff;--tx:#1b2430;--mut:#5b6777;--ac:#1F3A5F;--bd:#d5dce6;--ok:#1d7a46;--bad:#b3261e;--wa:#fff4d6}
+@media(prefers-color-scheme:dark){:root{--bg:#10151c;--card:#19212b;--tx:#e6ebf2;--mut:#9aa7b8;--ac:#7fa8e0;--bd:#2c3744;--ok:#5fcf8f;--bad:#ff8a80;--wa:#3a3320}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+header{background:#1F3A5F;color:#fff;padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}header h1{font-size:18px;margin:0;flex:1}
+header button{background:transparent;border:1px solid #fff8;color:#fff;border-radius:6px;padding:5px 12px;cursor:pointer}
+main{max-width:1000px;margin:0 auto;padding:20px}h2{margin:.2em 0 .5em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:14px}
+.mod{cursor:pointer}.mod:hover{border-color:var(--ac)}.mod h3{margin:4px 0}.mod p{color:var(--mut);font-size:13px;margin:4px 0}.big{font-size:28px;font-weight:700;color:var(--ac)}
+input,select,textarea{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid var(--bd);background:var(--card);color:var(--tx);width:100%}textarea{font-family:monospace;font-size:13px}
+label{display:block;font-size:13px;color:var(--mut);margin-bottom:2px}.f{margin-bottom:10px}.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+button.b{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid var(--ac);background:var(--card);color:var(--ac);cursor:pointer;margin-right:6px}button.p{background:var(--ac);color:var(--bg)}button.d{border-color:var(--bad);color:var(--bad)}
+table{border-collapse:collapse;width:100%;font-size:12.5px;margin:8px 0}th,td{border:1px solid var(--bd);padding:4px 7px;text-align:right}th:first-child,td:first-child,td.l,th.l{text-align:left}th{background:var(--bg)}
+.wrap{overflow-x:auto}.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut);font-size:13px}.err{background:var(--wa);border:1px solid var(--bad);color:var(--bad);padding:8px 12px;border-radius:8px;margin-bottom:10px}
+.tag{display:inline-block;font-size:11px;border:1px solid var(--bd);border-radius:10px;padding:1px 8px}.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:700px){.two{grid-template-columns:1fr}}
+canvas{width:100%;height:240px;border:1px solid var(--bd);border-radius:8px;background:var(--card)}details{margin:4px 0}code{background:var(--bg);padding:1px 5px;border-radius:4px}
+</style></head><body>
+<header><h1>SIMTELE-RISK · Problemas y simulaciones</h1><button onclick="home()">Inicio</button><button onclick="historial()">Historial</button><button id="btnAuth">Iniciar sesión</button></header>
+<main id="app"></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="./config.js"></script>
+<script src="./calculos.js"></script>
+<script>
+const $=id=>document.getElementById(id),app=$('app');let CASOS=[];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const NOM={NORMAL:'NORMAL',ESTRES:'ESTRÉS',MAL_CONDICIONADO:'MAL CONDICIONADO'};
+const fx=v=>v==null?'—':(typeof v==='number'?(v===0?'0':(Math.abs(v)>=1e4||Math.abs(v)<1e-3?v.toExponential(3):+v.toPrecision(6))):esc(v));
+/* ===================== Capa de datos: Supabase (PostgreSQL) ===================== */
+let sb=null,SESSION=null;const CAMPOS=SimCalc.CAMPOS,PRESETS=SimCalc.PRESETS,NCASO={1:'Detención',2:'Deterioro',3:'Oscilaciones',4:'Sensores'};
+const fail=e=>{throw {errores:[(e&&e.message)||String(e)]}};
+const ck=r=>{if(r.error)fail(r.error);return r.data};
+async function pag(mkq){let out=[],i=0;for(;;){const d=ck(await mkq().range(i,i+999));out=out.concat(d);if(d.length<1000)return out;i+=1000}}   // paginación (límite de 1000 filas por consulta)
+function conectar(){const C=window.SIMTELE_CONFIG||{};if(!window.supabase)throw {errores:['No se pudo cargar supabase-js (revise la conexión a internet).']};
+ if(!C.SUPABASE_URL||!C.SUPABASE_ANON_KEY||/PEGA_AQUI/.test(C.SUPABASE_URL+C.SUPABASE_ANON_KEY))throw {errores:['Falta configurar SUPABASE_URL y SUPABASE_ANON_KEY en config.js.']};
+ const K=String(C.SUPABASE_ANON_KEY);let rol='';try{rol=JSON.parse(atob(K.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))).role}catch(_){}
+ if(rol==='service_role'||/^sb_secret_/.test(K))throw {errores:['config.js contiene una clave secreta (service_role). Use solo la clave pública (anon/publishable).']};
+ sb=window.supabase.createClient(C.SUPABASE_URL,C.SUPABASE_ANON_KEY)}
+const needAuth=()=>{if(SESSION)return false;authView('Inicie sesión para crear, editar, eliminar o ejecutar problemas. La consulta es pública.');return true};
+const cl=v=>(v===undefined||v===null||!Number.isFinite(v))?null:v;               // NaN/Infinity → null (JSON no los admite)
+const cj=o=>JSON.parse(JSON.stringify(o,(k,v)=>typeof v==='number'&&!Number.isFinite(v)?null:v));
+const DB={
+ async casos(){const nom=ck(await sb.from('caso_estudio').select('id,nombre').order('id')),esc=await pag(()=>sb.from('escenario').select('id,caso_id').order('id')),sims=await pag(()=>sb.from('simulacion').select('id,escenario_id').order('id')),cas={};esc.forEach(e=>cas[e.id]=e.caso_id);const tot={};sims.forEach(x=>{const c=cas[x.escenario_id];tot[c]=(tot[c]||0)+1});
+  return nom.map(c=>({id:c.id,nombre:c.nombre,total:tot[c.id]||0,campos:CAMPOS[c.id],presets:PRESETS[c.id]}))},
+ async listar({caso,q}={}){const esc=await pag(()=>sb.from('escenario').select('id,caso_id,tipo,fuente_datos').order('id')),sims=await pag(()=>sb.from('simulacion').select('id,escenario_id,nombre,notas,fecha,estado').order('id',{ascending:false})),em={};esc.forEach(e=>em[e.id]=e);
+  let L=sims.filter(x=>em[x.escenario_id]).map(x=>({id:x.id,nombre:x.nombre,notas:x.notas,fecha:x.fecha,estado:x.estado,tipo:em[x.escenario_id].tipo,caso_id:em[x.escenario_id].caso_id,caso:NCASO[em[x.escenario_id].caso_id]}));
+  if(caso)L=L.filter(x=>x.caso_id===caso);if(q){const t=q.toLowerCase();L=L.filter(x=>[x.nombre,x.notas,x.tipo,x.caso].some(v=>String(v||'').toLowerCase().includes(t)))}return L},
+ async detalle(id){const sim=ck(await sb.from('simulacion').select('*').eq('id',id).maybeSingle());if(!sim)fail('No existe el problema.');
+  const esc=ck(await sb.from('escenario').select('*').eq('id',sim.escenario_id).single()),exs=ck(await sb.from('ejecucion_metodo').select('*').eq('simulacion_id',id).order('id')),ids=exs.map(e=>e.id);
+  const res=ids.length?ck(await sb.from('resultado_resumen').select('*').in('ejecucion_id',ids)):[];
+  const its=await Promise.all(exs.map(e=>pag(()=>sb.from('iteracion_resultado').select('numero,aproximacion_json,residual,error_abs,error_rel').eq('ejecucion_id',e.id).order('numero'))));
+  const d={id:sim.id,nombre:sim.nombre,notas:sim.notas,fecha:sim.fecha,estado:sim.estado,equipo:sim.equipo,esc_id:esc.id,tipo:esc.tipo,parametros:esc.parametros_json,fuente_datos:esc.fuente_datos,caso_id:esc.caso_id,caso:NCASO[esc.caso_id],ejecuciones:[],conclusiones:null};
+  exs.forEach((e,i)=>{const r=res.find(x=>x.ejecucion_id===e.id);if(e.metodo==='CONCLUSION'){d.conclusiones=r&&r.interpretacion?JSON.parse(r.interpretacion):null;return}
+   d.ejecuciones.push({...e,resumen:r?{referencia:r.referencia,valor:r.valor_json||{},error:r.metrica_error_json||{}}:null,iteraciones:its[i].map(t=>({numero:t.numero,aproximacion:t.aproximacion_json,residual:t.residual,error_abs:t.error_abs,error_rel:t.error_rel}))})});return d},
+ async crear(b){const p=b.parametros||{},er=SimCalc.validar(b.caso_id,b.tipo,b.nombre,p);if(er.length)throw {errores:er};
+  const esc=ck(await sb.from('escenario').insert({caso_id:b.caso_id,tipo:b.tipo,parametros_json:p,fuente_datos:b.fuente_datos||'supuesto del equipo'}).select().single());
+  const r=await sb.from('simulacion').insert({escenario_id:esc.id,nombre:b.nombre.trim(),notas:b.notas||null}).select().single();
+  if(r.error){await sb.from('escenario').delete().eq('id',esc.id);fail(r.error)}return r.data},
+ async actualizar(id,b){const cur=await DB.detalle(id),p=b.parametros||{},er=SimCalc.validar(cur.caso_id,b.tipo,b.nombre,p);if(er.length)throw {errores:er};
+  const u1=ck(await sb.from('escenario').update({tipo:b.tipo,parametros_json:p,fuente_datos:b.fuente_datos||cur.fuente_datos}).eq('id',cur.esc_id).select());if(!u1.length)fail('No tiene permiso para modificar este problema (solo su propietario).');
+  ck(await sb.from('simulacion').update({nombre:b.nombre.trim(),notas:b.notas||null,estado:'PENDIENTE'}).eq('id',id).select());
+  ck(await sb.from('ejecucion_metodo').delete().eq('simulacion_id',id).select());return {id}},
+ async borrar(id){const cur=await DB.detalle(id),d=ck(await sb.from('escenario').delete().eq('id',cur.esc_id).select());if(!d.length)fail('No tiene permiso para eliminar este problema (solo su propietario).');return {eliminado:id}},
+ async ejecutar(id){const cur=await DB.detalle(id),old={};cur.ejecuciones.forEach(e=>{if(e.resumen)old[e.metodo]={valor:e.resumen.valor}});
+  let out;try{out=SimCalc.calcular(cur.caso_id,cur.parametros)}catch(e){throw {errores:[e.message]}}
+  const own=ck(await sb.from('simulacion').update({estado:'PENDIENTE'}).eq('id',id).select());if(!own.length)fail('No tiene permiso para ejecutar este problema (solo su propietario).');
+  try{ck(await sb.from('ejecucion_metodo').delete().eq('simulacion_id',id).select());
+   const E=[...out.ejecuciones,{metodo:'CONCLUSION',tolerancia:null,paso:null,max_iter:null,convergio:true,tiempo_ms:0,iteraciones:[],resumen:{referencia:null,valor:{},error:{},interpretacion:JSON.stringify(out.conclusiones)}}];
+   const ins=ck(await sb.from('ejecucion_metodo').insert(E.map(e=>({simulacion_id:id,metodo:e.metodo,tolerancia:cl(e.tolerancia),paso:cl(e.paso),max_iter:e.max_iter,convergio:!!e.convergio,tiempo_ms:cl(e.tiempo_ms)}))).select('id,metodo')),eid={};ins.forEach(r=>eid[r.metodo]=r.id);
+   ck(await sb.from('resultado_resumen').insert(E.map(e=>({ejecucion_id:eid[e.metodo],referencia:e.resumen.referencia,valor_json:cj(e.resumen.valor),metrica_error_json:cj(e.resumen.error),interpretacion:e.resumen.interpretacion||null}))).select('id'));
+   const rows=[];E.forEach(e=>e.iteraciones.forEach(t=>rows.push({ejecucion_id:eid[e.metodo],numero:t.numero,aproximacion_json:cj(t.aproximacion),residual:cl(t.residual),error_abs:cl(t.error_abs),error_rel:cl(t.error_rel)})));
+   for(let i=0;i<rows.length;i+=500)ck(await sb.from('iteracion_resultado').insert(rows.slice(i,i+500)).select('id'));
+   ck(await sb.from('simulacion').update({estado:'COMPLETA'}).eq('id',id).select())}
+  catch(e){await sb.from('simulacion').update({estado:'ERROR'}).eq('id',id);throw e}
+  const d=await DB.detalle(id);d.comparacion=SimCalc.comparar(old,out.ejecuciones);return d}};
+/* ===================== Autenticación ===================== */
+function pintaAuth(){const b=$('btnAuth');b.textContent=SESSION?'Salir ('+SESSION.user.email+')':'Iniciar sesión';b.onclick=SESSION?salir:()=>authView()}
+async function authInit(){const {data}=await sb.auth.getSession();SESSION=data.session;pintaAuth();sb.auth.onAuthStateChange((_e,ses)=>{SESSION=ses;pintaAuth()})}
+function authView(msg){app.innerHTML=`<h2>Iniciar sesión</h2><div id="msg">${msg?`<div class="err">${esc(msg)}</div>`:''}</div><div class="card" style="max-width:420px"><div class="f"><label>Correo electrónico</label><input id="em" type="email" autocomplete="email"></div><div class="f"><label>Contraseña (mínimo 6 caracteres)</label><input id="pw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')entrar()"></div><button class="b p" onclick="entrar()">Entrar</button><button class="b" onclick="registrar()">Crear cuenta</button><button class="b" onclick="home()">Cancelar</button></div>`}
+async function entrar(){const {error}=await sb.auth.signInWithPassword({email:$('em').value.trim(),password:$('pw').value});if(error)return showErr({errores:[error.message]});home()}
+async function registrar(){const {data,error}=await sb.auth.signUp({email:$('em').value.trim(),password:$('pw').value});if(error)return showErr({errores:[error.message]});if(data.session)home();else $('msg').innerHTML='<div class="card ok">Cuenta creada. Revise su correo para confirmarla y luego inicie sesión.</div>'}
+async function salir(){await sb.auth.signOut();SESSION=null;pintaAuth();home()}
+const fecha=x=>{const t=new Date(x);return isNaN(t)?esc(x):t.toLocaleString()};
+const showErr=e=>{const x=$('msg');if(x)x.innerHTML=(e.errores||[String(e)]).map(t=>`<div class="err">${esc(t)}</div>`).join('');window.scrollTo(0,0)};
+async function init(){try{conectar();await authInit();await home()}catch(e){app.innerHTML=`<div class="err">${esc((e.errores||[e.message||String(e)])[0])}<br>Revise <code>config.js</code> (SUPABASE_URL y SUPABASE_ANON_KEY) y que haya ejecutado <code>supabase_schema.sql</code>.</div>`}}
+async function home(){CASOS=await DB.casos();app.innerHTML='<h2>Casos de estudio</h2><p class="mut">Escenarios hipotéticos con datos sintéticos; no describen fallas reales de ninguna empresa.</p><div class="grid">'+CASOS.map(c=>`<div class="card mod" onclick="modulo(${c.id})"><h3>${c.nombre}</h3><div class="big">${c.total}</div><p>problemas guardados</p><button class="b p" onclick="event.stopPropagation();formulario(${c.id})">+ Nuevo problema</button></div>`).join('')+'</div>'}
+const ESTADO=e=>`<span class="tag ${e==='COMPLETA'?'ok':''}">${e}</span>`;
+function tablaProb(L){return L.length?`<div class="wrap"><table><tr><th class="l">#</th><th class="l">Nombre</th><th class="l">Caso</th><th class="l">Escenario</th><th class="l">Estado</th><th class="l">Fecha</th><th class="l">Acciones</th></tr>${L.map(p=>`<tr><td class="l">${p.id}</td><td class="l">${esc(p.nombre)}</td><td class="l">${esc(p.caso)}</td><td class="l">${NOM[p.tipo]}</td><td class="l">${ESTADO(p.estado)}</td><td class="l">${fecha(p.fecha)}</td><td class="l"><button class="b" onclick="detalle(${p.id})">Ver</button><button class="b" onclick="formulario(${p.caso_id},${p.id})">Editar</button><button class="b d" onclick="borrar(${p.id},${p.caso_id})">Eliminar</button></td></tr>`).join('')}</table></div>`:'<p class="mut">No hay problemas guardados todavía.</p>'}
+async function modulo(id,q=''){const c=CASOS.find(x=>x.id===id),L=await DB.listar({caso:id,q});
+ app.innerHTML=`<h2>${c.nombre}</h2><div class="card"><button class="b p" onclick="formulario(${id})">+ Nuevo problema</button> <input id="q" style="width:240px;display:inline-block" placeholder="Buscar…" value="${esc(q)}" onkeydown="if(event.key==='Enter')modulo(${id},this.value)"><button class="b" onclick="modulo(${id},$('q').value)">Buscar</button>${tablaProb(L)}</div>`}
+async function historial(q=''){const L=await DB.listar({q});app.innerHTML=`<h2>Historial de problemas</h2><div class="card"><input id="q" style="width:260px;display:inline-block" placeholder="Buscar por nombre, caso, escenario…" value="${esc(q)}" onkeydown="if(event.key==='Enter')historial(this.value)"><button class="b" onclick="historial($('q').value)">Buscar</button>${tablaProb(L)}</div>`}
+async function borrar(id,caso){if(needAuth())return;if(!confirm('¿Eliminar este problema y todos sus resultados?'))return;try{await DB.borrar(id);caso?modulo(caso):historial()}catch(e){alert((e.errores||[e.message])[0])}}
+/* ---------- Formulario (crear / editar) ---------- */
+const matTxt=A=>(A||[]).map(r=>r.join(', ')).join('\n');
+async function formulario(casoId,pid){if(needAuth())return;const c=CASOS.find(x=>x.id===casoId);let cur=null;if(pid)cur=await DB.detalle(pid);
+ const pr=cur?cur.parametros:c.presets.NORMAL,tipo=cur?cur.tipo:'NORMAL';
+ const campos=c.campos.map(f=>`<div class="f"><label>${f.label} ${f.unit?'['+f.unit+']':''} <span class="mut">${f.opt?'(opcional) ':''}${f.strict?'(':'['}${f.min}, ${f.max}]</span></label><input id="p_${f.k}" type="number" step="any" value="${pr[f.k]??''}"></div>`).join('');
+ const extra=casoId===2?`<div class="two"><div class="f"><label>Matriz A (SPD, una fila por línea)</label><textarea id="p_A" rows="6">${matTxt(pr.A)}</textarea></div><div class="f"><label>Vector b</label><textarea id="p_b" rows="6">${(pr.b||[]).join('\n')}</textarea></div></div>`
+  :casoId===4?`<div class="f"><label>Función base</label><select id="p_funcion"><option value="sin" ${pr.funcion==='sin'?'selected':''}>y = sin(t)</option><option value="exp" ${pr.funcion==='exp'?'selected':''}>y = e^(−t)</option></select></div>`:'';
+ app.innerHTML=`<h2>${pid?'Editar':'Nuevo'} problema · ${c.nombre}</h2><div id="msg"></div><div class="card"><div class="cols"><div class="f"><label>Nombre</label><input id="nombre" value="${esc(cur?.nombre||'')}" maxlength="80"></div>
+ <div class="f"><label>Escenario ${pid?'':'(carga valores predefinidos)'}</label><select id="tipo" onchange="${pid?'':`preset(${casoId})`}">${Object.keys(NOM).map(k=>`<option value="${k}" ${k===tipo?'selected':''}>${NOM[k]}</option>`).join('')}</select></div>
+ <div class="f"><label>Fuente de los datos</label><input id="fuente" value="${esc(cur?.fuente_datos||'supuesto del equipo')}"></div></div>
+ <div class="cols">${campos}</div>${extra}<div class="f"><label>Notas</label><textarea id="notas" rows="2">${esc(cur?.notas||'')}</textarea></div>
+ <button class="b p" onclick="guardar(${casoId},${pid||0})">${pid?'Guardar cambios':'Guardar problema'}</button><button class="b" onclick="modulo(${casoId})">Cancelar</button>${pid?'<p class="mut">Al guardar cambios se descartan los resultados anteriores (estado PENDIENTE).</p>':''}</div>`}
+function preset(casoId){const c=CASOS.find(x=>x.id===casoId),p=c.presets[$('tipo').value];Object.entries(p).forEach(([k,v])=>{const e=$('p_'+k);if(!e)return;e.value=k==='A'?matTxt(v):k==='b'?v.join('\n'):(v??'')})}
+const parseNums=t=>t.trim().split(/[\s,;]+/).filter(Boolean).map(Number);
+async function guardar(casoId,pid){if(needAuth())return;const c=CASOS.find(x=>x.id===casoId),p={},er=[];
+ c.campos.forEach(f=>{const raw=$('p_'+f.k).value.trim();if(raw===''){if(!f.opt)er.push(`${f.label}: es obligatorio.`);p[f.k]=null;return}const v=Number(raw);
+  if(!isFinite(v))er.push(`${f.label}: debe ser un número.`);else if((f.strict?v<=f.min:v<f.min)||v>f.max)er.push(`${f.label}: debe estar en ${f.strict?'(':'['}${f.min}, ${f.max}].`);p[f.k]=v});
+ if(casoId===2){p.A=$('p_A').value.trim().split('\n').filter(l=>l.trim()).map(parseNums);p.b=parseNums($('p_b').value);if(p.A.flat().concat(p.b).some(x=>!isFinite(x)))er.push('A y b deben contener solo números.')}
+ if(casoId===4)p.funcion=$('p_funcion').value;if(!$('nombre').value.trim())er.push('El nombre es obligatorio.');
+ if(er.length)return showErr({errores:er});
+ const body={caso_id:casoId,tipo:$('tipo').value,nombre:$('nombre').value,notas:$('notas').value,fuente_datos:$('fuente').value,parametros:p};
+ try{const r=pid?await DB.actualizar(pid,body):await DB.crear(body);detalle(r.id)}catch(e){showErr(e)}}
+/* ---------- Detalle y resultados ---------- */
+let LAST=null;
+async function detalle(id,cmp){const d=await DB.detalle(id);LAST=d;pintar(d,cmp)}
+async function ejecutar(id){if(needAuth())return;try{const d=await DB.ejecutar(id);LAST=d;pintar(d,d.comparacion)}catch(e){showErr(e)}}
+function kv(o){return Object.entries(o).filter(([k,v])=>v!=null&&typeof v!=='object').map(([k,v])=>`<tr><td class="l">${esc(k)}</td><td>${fx(v)}</td></tr>`).join('')}
+function pintar(d,cmp){const P=d.parametros,ej=d.ejecuciones,fila=e=>{const r=e.resumen||{},v=r.valor||{},er=r.error||{};return`<tr><td class="l">${esc(e.metodo)}</td><td class="${e.convergio?'ok':'bad'}">${e.convergio?'Sí':'No'}</td><td>${fx(v.iteraciones??(e.iteraciones.length||null))}</td><td>${fx(er.error_abs??er.error_abs_x)}</td><td>${fx(er.error_rel??er.error_rel_x)}</td><td>${fx(er.residual)}</td><td>${fx(e.tiempo_ms)}</td></tr>`};
+ const met=ej.filter(e=>e.metodo!=='REFERENCIA_ANALITICA'),ref=ej.find(e=>e.metodo==='REFERENCIA_ANALITICA');
+ let cm='';if(cmp){const mx=Math.max(0,...Object.values(cmp));cm=Object.keys(cmp).length?`<div class="card"><b>Verificación de reproducibilidad:</b> diferencia máxima entre el cálculo guardado y el recalculado = ${fx(mx)} ${mx<1e-8?'<span class="ok">✓ coincide dentro de la tolerancia (1e-8)</span>':'<span class="bad">✗ no coincide</span>'}</div>`:''}
+ const Pt=Object.entries(P).filter(([k,v])=>k!=='A'&&k!=='b').map(([k,v])=>`<tr><td class="l">${esc(k)}</td><td>${fx(v)}</td></tr>`).join('')+(P.A?`<tr><td class="l">A (${P.b.length}×${P.b.length})</td><td>${esc(P.A.map(r=>r.map(x=>+x.toPrecision(4)).join(' ')).join(' ; ')).slice(0,120)}…</td></tr>`:'');
+ app.innerHTML=`<div id="msg"></div><h2>${esc(d.nombre)} <span class="tag">${esc(d.caso)} · ${NOM[d.tipo]}</span> ${ESTADO(d.estado)}</h2>
+ <div class="card"><button class="b p" onclick="ejecutar(${d.id})">${ej.length?'Relanzar':'Ejecutar'}</button><button class="b" onclick="formulario(${d.caso_id},${d.id})">Editar</button><button class="b d" onclick="borrar(${d.id},${d.caso_id})">Eliminar</button><button class="b" onclick="modulo(${d.caso_id})">Volver al módulo</button>
+ <p class="mut">Creado: ${fecha(d.fecha)} · fuente de datos: ${esc(d.fuente_datos)}${d.notas?' · Notas: '+esc(d.notas):''}</p><details><summary>Parámetros de entrada</summary><div class="wrap"><table>${Pt}</table></div></details></div>${cm}`+
+ (ej.length?`<div class="card"><h3>Resultados por método</h3><div class="wrap"><table><tr><th class="l">Método</th><th>Convergió</th><th>Iter.</th><th>Error abs</th><th>Error rel</th><th>Residual</th><th>ms</th></tr>${met.map(fila).join('')}</table></div>
+  ${ref?`<details open><summary>Referencia analítica / valores de referencia</summary><div class="wrap"><table>${kv(ref.resumen.valor)}</table></div></details>`:''}
+  ${met.filter(e=>e.iteraciones.length>1||(e.resumen?.valor?.refinamiento)).map(e=>`<details><summary>Iteraciones · ${esc(e.metodo)} (${e.iteraciones.length} guardadas)</summary><div class="wrap"><table><tr><th>n</th><th>aproximación</th><th>residual</th><th>error abs</th><th>error rel</th></tr>${[...e.iteraciones.slice(0,10),...(e.iteraciones.length>12?[{numero:'…',aproximacion:[],residual:null,error_abs:null,error_rel:null}]:[]),...e.iteraciones.slice(-2)].map(i=>`<tr><td>${i.numero}</td><td class="l">${esc((i.aproximacion||[]).slice(0,5).map(x=>fx(x)).join(', '))}</td><td>${fx(i.residual)}</td><td>${fx(i.error_abs)}</td><td>${fx(i.error_rel)}</td></tr>`).join('')}</table></div></details>`).join('')}</div>
+  <div class="two"><div class="card"><h4>Gráfico 1 · Convergencia (log₁₀)</h4><canvas id="g1" width="520" height="240"></canvas></div><div class="card"><h4 id="t2">Gráfico 2</h4><canvas id="g2" width="520" height="240"></canvas></div></div>
+  <div class="two"><div class="card"><h4>Conclusión numérica</h4><p>${esc(d.conclusiones?.numerica)}</p></div><div class="card"><h4>Conclusión del problema</h4><p>${esc(d.conclusiones?.problema)}</p></div></div>`
+  :`<div class="card"><p class="mut">Este problema está <b>PENDIENTE</b>: pulse «Ejecutar» para calcular y guardar los resultados.</p></div>`);
+ if(ej.length)graficos(d)}
+const COL=['#d9534f','#3b82f6','#22a06b','#e69f00','#8e44ad','#16a2b8','#795548'];
+function linea(id,ser,o={}){const c=$(id),g=c.getContext('2d'),W=c.width,H=c.height,tx=getComputedStyle(document.body).color;g.clearRect(0,0,W,H);g.fillStyle=tx;g.font='11px sans-serif';
+ const T=(v,l)=>l?Math.log10(v):v,pts=ser.flatMap(s=>s.p).filter(p=>isFinite(T(p[0],o.lx))&&isFinite(T(p[1],o.ly))&&(!o.ly||p[1]>0)&&(!o.lx||p[0]>0));if(!pts.length){g.fillText('Sin datos para graficar',20,30);return}
+ const xs=pts.map(p=>T(p[0],o.lx)),ys=pts.map(p=>T(p[1],o.ly));let x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);if(x0===x1)x1=x0+1;if(y0===y1)y1=y0+1;
+ const X=v=>40+(W-55)*(T(v,o.lx)-x0)/(x1-x0),Y=v=>10+(H-45)*(y1-T(v,o.ly))/(y1-y0);g.strokeStyle='#8884';g.beginPath();g.moveTo(40,10);g.lineTo(40,H-35);g.lineTo(W-10,H-35);g.stroke();
+ [y0,y1].forEach(v=>g.fillText(o.ly?'1e'+v.toFixed(0):(+v.toPrecision(3)),2,Y(o.ly?Math.pow(10,v):v)+4));[x0,x1].forEach(v=>g.fillText(o.lx?'1e'+v.toFixed(1):(+v.toPrecision(3)),X(o.lx?Math.pow(10,v):v)-10,H-22));
+ ser.forEach((s,j)=>{g.strokeStyle=s.c||COL[j%7];g.lineWidth=2;g.beginPath();let st=false;s.p.forEach(p=>{if(!isFinite(T(p[1],o.ly))||(o.ly&&p[1]<=0)||(o.lx&&p[0]<=0)){st=false;return}st?g.lineTo(X(p[0]),Y(p[1])):g.moveTo(X(p[0]),Y(p[1]));st=true});g.stroke();g.fillStyle=s.c||COL[j%7];g.fillText(s.n,50+j*85,H-6)});
+ if(o.h!=null){g.strokeStyle='#d9534f';g.setLineDash([4,4]);g.beginPath();g.moveTo(40,Y(o.h));g.lineTo(W-10,Y(o.h));g.stroke();g.setLineDash([])}}
+function graficos(d){const ex=d.ejecuciones.filter(e=>e.iteraciones.length>1&&e.metodo!=='REFERENCIA_ANALITICA');
+ linea('g1',ex.map((e,j)=>({n:e.metodo.slice(0,8),p:e.iteraciones.map(i=>[i.numero,i.residual??i.error_abs])})),{ly:true});const P=d.parametros;
+ if(d.caso_id===1){$('t2').textContent='Gráfico 2 · Error en x_final vs paso h (log-log)';linea('g2',d.ejecuciones.filter(e=>e.resumen?.valor?.refinamiento).map(e=>({n:e.metodo.slice(0,8),p:e.resumen.valor.refinamiento})),{lx:true,ly:true})}
+ else if(d.caso_id===2){$('t2').textContent='Gráfico 2 · D(t) y umbral D*';const r=d.ejecuciones.find(e=>e.metodo==='REFERENCIA_ANALITICA').resumen.valor.t_umbral,p=[];for(let i=0;i<=60;i++){const t=1.3*r*i/60;p.push([t,P.D0+P.alpha*t+P.beta*t*t])}linea('g2',[{n:'D(t)',p}],{h:P.Dumbral})}
+ else{$('t2').textContent='Gráfico 2';linea('g2',[],{})}}
+init();
+</script></body></html>
